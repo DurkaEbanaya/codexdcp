@@ -23,10 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IPC master/secondary mode — no longer needed (single process controls Chrome)
 - Sticky-chat mode (`--sticky-chat` flag) — temporary chat replaces it
 - `chatgpt_new_chat` MCP tool — not needed with temp chat
+- `chatgpt_temp_chat_on` / `chatgpt_temp_chat_off` MCP tools — temp chat is always on
+- `chatgpt_status` MCP tool — not needed
 - `new_chat` parameter from `chatgpt_coder` and `chatgpt_ask` tools
 - `Method` enum from bridge — simplified to direct `request()` call
 - `has_active_chat` tracking — irrelevant in temp chat mode
 - `--ws-host` and `--ws-port` CLI flags
+- Error messages mentioning "browser extension" — updated to "Chrome/CDP"
 
 ### Changed
 - `src/cdp.rs` — new file: Chrome process launcher, CDP client (WebSocket + `Runtime.evaluate`)

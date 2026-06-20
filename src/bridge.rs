@@ -329,29 +329,6 @@ impl Bridge {
             result: result_rx,
         })
     }
-
-    pub async fn request_set_temp_chat(&self, enabled: bool) -> Result<String, BridgeError> {
-        self.ensure_chatgpt_ready().await?;
-        let client = self.cdp().await?;
-
-        let result = client
-            .evaluate_with_timeout(&js::call_set_temp_chat(enabled), Duration::from_secs(30))
-            .await?;
-
-        if let Some(err) = result.get("error") {
-            return Err(BridgeError::ExtensionError(
-                err["message"].as_str().unwrap_or("temp chat toggle failed").to_string(),
-            ));
-        }
-
-        self.inner.temp_chat_on.store(enabled, Ordering::Relaxed);
-        let state = result.get("state").and_then(|s| s.as_str()).unwrap_or(if enabled { "on" } else { "off" });
-        Ok(if state == "on" {
-            "Temporary chat enabled.".to_string()
-        } else {
-            "Temporary chat disabled.".to_string()
-        })
-    }
 }
 
 fn is_transient(err: &BridgeError) -> bool {

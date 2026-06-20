@@ -10,7 +10,7 @@ Tech stack: Rust (2024 edition, tokio, rmcp, axum, tokio-tungstenite), CDP, SSE 
 
 ## Where To Look
 
-* `src/mcp_server.rs` — MCP tool definitions (`chatgpt_coder`, `chatgpt_ask`, `chatgpt_temp_chat_on`, `chatgpt_temp_chat_off`, `chatgpt_status`).
+* `src/mcp_server.rs` — MCP tool definitions (`chatgpt_coder`, `chatgpt_ask`).
 * `src/cdp.rs` — Chrome process launcher, CDP client (WebSocket + `Runtime.evaluate`), HTTP endpoint for `/json/list`.
 * `src/bridge.rs` — CDP bridge: temp chat auto-enable, retries, streaming, page load polling.
 * `src/js.rs` — JS function strings injected via `Runtime.evaluate` (`pageSendPrompt`, `pageReadAndCheck`, `pageSetTempChat`, model selection, `htmlToMarkdown`). `DEFAULT_SELECTORS` constant.
@@ -33,7 +33,7 @@ Tech stack: Rust (2024 edition, tokio, rmcp, axum, tokio-tungstenite), CDP, SSE 
 
 * What it is: `rmcp`-based stdio server exposing ChatGPT as tools.
 * Where it lives: `src/mcp_server.rs`, `src/main.rs`.
-* When changing it: keep tool return types as `String` or `Result<String, String>` so `rmcp` can build `CallToolResult`. Recompile and check with `cargo build`.
+* When changing it: keep tool return types as `String` or `Result<String, String>` so `rmcp` can build `CallToolResult`. Recompile and check with `cargo build`. Only two tools: `chatgpt_coder` and `chatgpt_ask`.
 
 ### CDP bridge
 
@@ -53,7 +53,7 @@ Tech stack: Rust (2024 edition, tokio, rmcp, axum, tokio-tungstenite), CDP, SSE 
 * Run: `cargo run -- --help`
 * Check: `cargo check`
 * Lint: `cargo clippy --tests -- -D warnings`
-* Verify MCP: register the binary in OpenCode and run `chatgpt_status`.
+* Verify MCP: register the binary in OpenCode and use `chatgpt_ask` with a simple question.
 * Debug with visible Chrome: `cargo run -- --visible --log-level debug`
 
 ## Where To Find Details

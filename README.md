@@ -17,7 +17,7 @@ MCP-коннектор, который превращает браузерный
                                       └──────────────────────┘                   └─────────────────────┘
 ```
 
-- **Rust MCP server** — реализует протокол MCP через stdio, предоставляет инструменты `chatgpt_coder`, `chatgpt_ask`, `chatgpt_temp_chat_on`, `chatgpt_temp_chat_off`, `chatgpt_status`.
+- **Rust MCP server** — реализует протокол MCP через stdio, предоставляет инструменты `chatgpt_coder`, `chatgpt_ask`.
 - **CDP bridge** — внутри сервера, запускает headless Chrome, подключается через DevTools Protocol, выполняет JS через `Runtime.evaluate`.
 - **HTTP provider** — OpenAI-совместимый API на порту 8766 (`/v1/chat/completions`, `/v1/models`, `/health`), поддерживает streaming (SSE).
 - **Headless Chrome** — запускается как child-процесс, использует persistent profile для переиспользования cookies/login сессии.
@@ -142,14 +142,6 @@ cp "$BRAVE/Preferences" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
     "спроси": {
       "description": "Задать вопрос ChatGPT",
       "template": "Use the chatgpt_ask MCP tool to ask: $ARGUMENTS"
-    },
-    "временный-чат-вкл": {
-      "description": "Включить временный чат",
-      "template": "Use chatgpt_temp_chat_on to enable temporary chat"
-    },
-    "временный-чат-выкл": {
-      "description": "Выключить временный чат",
-      "template": "Use chatgpt_temp_chat_off to disable temporary chat"
     }
   }
 }
@@ -161,11 +153,8 @@ cp "$BRAVE/Preferences" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
 |---|---|---|
 | `chatgpt_coder` | Делегировать задачу по коду (Codex-style) | `task`, `context`, `language`, `model`, `format` |
 | `chatgpt_ask` | Задать общий вопрос | `prompt`, `model`, `format` |
-| `chatgpt_temp_chat_on` | Включить временный чат | — |
-| `chatgpt_temp_chat_off` | Выключить временный чат | — |
-| `chatgpt_status` | Проверить статус подключения | — |
 
-Временный чат включается автоматически при каждой отправке запроса. Используйте `chatgpt_temp_chat_off` только если нужно отключить этот режим.
+Временный чат включается автоматически при каждой отправке запроса — история не сохраняется.
 
 ## HTTP API
 
