@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2025-06-20
+
+### Added
+- Hidden tab auto-creation: if no ChatGPT tab is open, the extension creates a background tab (`active: false`) so the user is not distracted
+- Temporary chat toggle: `chatgpt_temp_chat_on` / `chatgpt_temp_chat_off` MCP tools
+- `SetTempChat` bridge method with `temp_chat_enabled` parameter
+- `pageSetTempChat` injected function: searches by selector, text content, and opens menus/dropdowns to find the temp chat toggle
+- New selectors in `selectors.json`: `tempChatButton`, `tempChatText`
+- IPC shared bridge: multiple OpenCode sessions share one WebSocket connection via Unix socket (`/tmp/codexdcp.sock`)
+- Master/secondary mode: first process = master (WebSocket + IPC server), subsequent processes = secondary (IPC client)
+- Slash commands: `/временный-чат-вкл`, `/временный-чат-выкл`
+
+### Changed
+- `findChatGPTTab` renamed to `findOrCreateTab` — creates hidden tab if none exists
+- Version bumped to 0.3.0 in Cargo.toml and manifest.json
+
 ## [0.2.0] - 2025-06-20
 
 ### Added
