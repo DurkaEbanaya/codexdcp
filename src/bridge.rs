@@ -3,16 +3,20 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+const IPC_SOCKET_PATH: &str = "/tmp/codexdcp.sock";
 
 /// Which browser-side action the bridge should execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +106,7 @@ struct Inner {
     max_retries: u32,
     retry_delay_ms: u64,
     has_active_chat: AtomicBool,
+    is_secondary: AtomicBool,
 }
 
 /// Handle returned by `request_streaming` — provides partial updates and the final result.
@@ -128,6 +133,7 @@ impl Bridge {
                 max_retries: config.max_retries,
                 retry_delay_ms: config.retry_delay_ms,
                 has_active_chat: AtomicBool::new(false),
+                is_secondary: AtomicBool::new(false),
             }),
         }
     }
@@ -312,21 +318,266 @@ impl Bridge {
         }
     }
 
-    /// Start the WebSocket server. Runs until the process is shut down.
+    /// Start the bridge. Tries to be master (WebSocket server).
+    /// If the port is already taken, falls back to secondary mode (IPC client).
     pub async fn start(&self) -> anyhow::Result<()> {
         let addr = self.websocket_addr();
-        let listener = TcpListener::bind(&addr).await?;
-        info!("WebSocket bridge listening on ws://{}", addr);
+
+        // Try to bind the WebSocket port (master mode)
+        match TcpListener::bind(&addr).await {
+            Ok(listener) => {
+                info!("WebSocket bridge listening on ws://{} (master)", addr);
+                self.start_ipc_server()?;
+                self.accept_ws_loop(listener).await;
+            }
+            Err(_) => {
+                info!("port {} already in use, starting as secondary (IPC client)", addr);
+                self.start_secondary_mode().await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn accept_ws_loop(&self, listener: TcpListener) {
+        loop {
+            match listener.accept().await {
+                Ok((stream, peer)) => {
+                    let this = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = this.handle_connection(stream, peer).await {
+                            warn!("connection from {} closed: {}", peer, e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    warn!("accept error: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Start IPC Unix socket server (master mode) for secondary processes.
+    fn start_ipc_server(&self) -> anyhow::Result<()> {
+        let socket_path = PathBuf::from(IPC_SOCKET_PATH);
+        let _ = std::fs::remove_file(&socket_path);
+
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        listener.set_nonblocking(true)?;
+
+        let tokio_listener = UnixListener::from_std(listener)?;
+        let this = self.clone();
+
+        tokio::spawn(async move {
+            info!("IPC server listening on {}", IPC_SOCKET_PATH);
+            loop {
+                match tokio_listener.accept().await {
+                    Ok((stream, _)) => {
+                        let this = this.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = this.handle_ipc_connection(stream).await {
+                                warn!("IPC connection closed: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        warn!("IPC accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Handle an IPC connection from a secondary process.
+    /// Forwards requests to the WebSocket extension and routes responses back.
+    async fn handle_ipc_connection(&self, stream: UnixStream) -> anyhow::Result<()> {
+        let (read, write) = stream.into_split();
+        let write = Arc::new(tokio::sync::Mutex::new(write));
+        let reader = tokio::io::BufReader::new(read);
+        let mut lines = reader.lines();
 
         loop {
-            let (stream, peer) = listener.accept().await?;
-            let this = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = this.handle_connection(stream, peer).await {
-                    warn!("connection from {} closed: {}", peer, e);
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if line.is_empty() { continue; }
+                    match serde_json::from_str::<serde_json::Value>(&line) {
+                        Ok(msg) => {
+                            if msg["type"] == "request" {
+                                let id = msg["id"].as_str().unwrap_or("").to_string();
+                                let json = serde_json::to_string(&msg).unwrap_or_default();
+
+                                let (response_tx, response_rx) = oneshot::channel();
+                                self.inner.pending.lock().await.insert(id.clone(), response_tx);
+
+                                let client_snapshot = {
+                                    let guard = self.inner.client.lock().await;
+                                    guard.as_ref().map(|c| c.sender.clone())
+                                };
+
+                                if let Some(sender) = client_snapshot {
+                                    let _ = sender.send(json);
+
+                                    let id_clone = id.clone();
+                                    let this = self.clone();
+                                    let write_clone = write.clone();
+                                    tokio::spawn(async move {
+                                        let result = timeout(
+                                            Duration::from_secs(180),
+                                            response_rx,
+                                        ).await;
+                                        let response_json = match result {
+                                            Ok(Ok(Ok(r))) => serde_json::json!({
+                                                "type": "response", "id": id_clone,
+                                                "result": {"text": r.text, "format": r.format}
+                                            }).to_string(),
+                                            Ok(Ok(Err(e))) => serde_json::json!({
+                                                "type": "response", "id": id_clone,
+                                                "error": {"message": e.to_string()}
+                                            }).to_string(),
+                                            Ok(Err(_)) => serde_json::json!({
+                                                "type": "response", "id": id_clone,
+                                                "error": {"message": "not connected"}
+                                            }).to_string(),
+                                            Err(_) => serde_json::json!({
+                                                "type": "response", "id": id_clone,
+                                                "error": {"message": "timeout"}
+                                            }).to_string(),
+                                        };
+                                        this.inner.pending.lock().await.remove(&id_clone);
+                                        let mut w = write_clone.lock().await;
+                                        let _ = w.write_all(response_json.as_bytes()).await;
+                                        let _ = w.write_all(b"\n").await;
+                                    });
+                                } else {
+                                    self.inner.pending.lock().await.remove(&id);
+                                    let err = serde_json::json!({
+                                        "type": "response", "id": id,
+                                        "error": {"message": "not connected"}
+                                    }).to_string();
+                                    let mut w = write.lock().await;
+                                    let _ = w.write_all(err.as_bytes()).await;
+                                    let _ = w.write_all(b"\n").await;
+                                }
+                            }
+                        }
+                        Err(e) => warn!("invalid IPC JSON: {}", e),
+                    }
                 }
+                Ok(None) => break,
+                Err(e) => {
+                    warn!("IPC read error: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Secondary mode: connect to the master process via Unix socket.
+    /// Forward requests through IPC and wait for responses.
+    async fn start_secondary_mode(&self) -> anyhow::Result<()> {
+        self.inner.is_secondary.store(true, Ordering::Relaxed);
+
+        let socket_path = PathBuf::from(IPC_SOCKET_PATH);
+
+        // Wait for the IPC socket to appear (master might still be starting)
+        let stream: UnixStream = timeout(Duration::from_secs(5), async {
+            loop {
+                match UnixStream::connect(&socket_path).await {
+                    Ok(s) => return s,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("IPC socket not available"))?;
+
+        info!("connected to master via IPC at {}", IPC_SOCKET_PATH);
+
+        let (read, mut write) = stream.into_split();
+
+        // Create a channel for sending requests via IPC
+        let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel::<String>();
+        {
+            let mut client_guard = self.inner.client.lock().await;
+            *client_guard = Some(Client {
+                id: Uuid::new_v4(),
+                sender: ipc_tx,
             });
         }
+
+        // Write task: forward queued requests to master
+        let write_task = tokio::spawn(async move {
+            while let Some(msg) = ipc_rx.recv().await {
+                if write.write_all(msg.as_bytes()).await.is_err() {
+                    break;
+                }
+                if write.write_all(b"\n").await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Read task: process responses from master
+        let this = self.clone();
+        let read_task = tokio::spawn(async move {
+            let reader = tokio::io::BufReader::new(read);
+            let mut lines = reader.lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.is_empty() { continue; }
+                match serde_json::from_str::<serde_json::Value>(&line) {
+                    Ok(msg) => {
+                        if msg["type"] == "response" {
+                            let id = msg["id"].as_str().unwrap_or("").to_string();
+                            let result = msg.get("result").map(|r| ResponseResult {
+                                    text: r["text"].as_str().unwrap_or("").to_string(),
+                                    format: r.get("format").and_then(|f| f.as_str()).map(String::from),
+                                });
+                            let error = msg.get("error").map(|e| ErrorPayload {
+                                    message: e["message"].as_str().unwrap_or("").to_string(),
+                                });
+
+                            let payload = match (result, error) {
+                                (Some(r), _) => Ok(r),
+                                (None, Some(e)) => Err(BridgeError::ExtensionError(e.message)),
+                                (None, None) => Err(BridgeError::InvalidResponse(
+                                    "IPC response had neither result nor error".to_string(),
+                                )),
+                            };
+
+                            if let Some(tx) = this.inner.pending.lock().await.remove(&id) {
+                                let _ = tx.send(payload);
+                            }
+                        } else if msg["type"] == "partial" {
+                            let id = msg["id"].as_str().unwrap_or("").to_string();
+                            let text = msg["text"].as_str().unwrap_or("").to_string();
+                            if let Some(tx) = this.inner.partials.lock().await.get(&id) {
+                                let _ = tx.send(text);
+                            }
+                        }
+                    }
+                    Err(e) => warn!("invalid IPC response: {}", e),
+                }
+            }
+
+            // Master disconnected
+            warn!("IPC connection to master lost");
+            let mut client_guard = this.inner.client.lock().await;
+            *client_guard = None;
+        });
+
+        // Wait for either task to finish
+        tokio::select! {
+            _ = write_task => {}
+            _ = read_task => {}
+        }
+
+        Ok(())
     }
 
     fn websocket_addr(&self) -> String {
