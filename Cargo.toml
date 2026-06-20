@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["OpenCode Community"]
 description = "CodexDCP — Codex Developer Chaos Platform: MCP connector that turns browser ChatGPT into a Codex-like agent for OpenCode"
 license = "MIT"
-repository = "https://github.com/anomalyco/codexdcp"
+repository = "https://github.com/DurkaEbanaya/codexdcp"
 
 [[bin]]
 name = "codexdcp"
