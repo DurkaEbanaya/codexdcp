@@ -8,13 +8,6 @@ use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Method {
-    SendMessage,
-    NewChat,
-    SetTempChat,
-}
-
 pub struct StreamHandle {
     pub partials: broadcast::Receiver<String>,
     pub result: oneshot::Receiver<Result<String, BridgeError>>,
@@ -24,8 +17,8 @@ struct Inner {
     cdp: Mutex<Option<CdpClient>>,
     _chrome: Mutex<Option<ChromeProcess>>,
     selectors: String,
-    has_active_chat: AtomicBool,
     initialized: AtomicBool,
+    temp_chat_on: AtomicBool,
     max_retries: u32,
     retry_delay_ms: u64,
 }
@@ -42,8 +35,8 @@ impl Bridge {
                 cdp: Mutex::new(None),
                 _chrome: Mutex::new(None),
                 selectors,
-                has_active_chat: AtomicBool::new(false),
                 initialized: AtomicBool::new(false),
+                temp_chat_on: AtomicBool::new(false),
                 max_retries,
                 retry_delay_ms,
             }),
@@ -86,10 +79,6 @@ impl Bridge {
         guard.as_ref().is_some_and(|c| c.is_connected())
     }
 
-    pub fn has_active_chat(&self) -> bool {
-        self.inner.has_active_chat.load(Ordering::Relaxed)
-    }
-
     async fn ensure_chatgpt_ready(&self) -> Result<(), BridgeError> {
         let client = self.cdp().await?;
 
@@ -121,7 +110,6 @@ impl Bridge {
 
         let client = self.cdp().await?;
 
-        // Wait for ChatGPT page to finish loading (Cloudflare + SPA)
         for attempt in 0..15 {
             let title_result = client.evaluate("document.title").await;
             let title = title_result
@@ -139,10 +127,10 @@ impl Bridge {
         let script = js::init_script(&self.inner.selectors);
         client.evaluate(&script).await?;
 
-        // Verify
         let ready = client.evaluate(js::call_is_ready()).await?;
         if ready.as_bool() == Some(true) {
             self.inner.initialized.store(true, Ordering::Relaxed);
+            self.inner.temp_chat_on.store(false, Ordering::Relaxed);
             info!("JS functions injected successfully");
             Ok(())
         } else {
@@ -150,11 +138,27 @@ impl Bridge {
         }
     }
 
+    async fn ensure_temp_chat_on(&self) -> Result<(), BridgeError> {
+        if self.inner.temp_chat_on.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let client = self.cdp().await?;
+        let result = client
+            .evaluate_with_timeout(&js::call_set_temp_chat(true), Duration::from_secs(30))
+            .await?;
+
+        if result.get("error").is_none() {
+            self.inner.temp_chat_on.store(true, Ordering::Relaxed);
+            info!("temporary chat enabled");
+            Ok(())
+        } else {
+            Err(BridgeError::ExtensionError("failed to enable temp chat".to_string()))
+        }
+    }
+
     pub async fn request(
         &self,
-        method: Method,
         prompt: String,
-        new_chat: bool,
         timeout_secs: u64,
         model: Option<String>,
         format: Option<String>,
@@ -172,21 +176,13 @@ impl Bridge {
             }
 
             match self
-                .request_once(method, prompt.clone(), new_chat, timeout_secs, model.clone(), format.clone())
+                .request_once(prompt.clone(), timeout_secs, model.clone(), format.clone())
                 .await
             {
-                Ok(result) => {
-                    if method == Method::SendMessage {
-                        self.inner.has_active_chat.store(true, Ordering::Relaxed);
-                    } else if method == Method::NewChat {
-                        self.inner.has_active_chat.store(false, Ordering::Relaxed);
-                    }
-                    return Ok(result);
-                }
+                Ok(result) => return Ok(result),
                 Err(e) if is_transient(&e) && attempt < max_retries => {
                     warn!("attempt {} failed (transient): {}", attempt + 1, e);
                     last_err = e;
-                    // Re-initialize if needed
                     let _ = self.ensure_chatgpt_ready().await;
                 }
                 Err(e) => return Err(e),
@@ -197,28 +193,16 @@ impl Bridge {
 
     async fn request_once(
         &self,
-        method: Method,
         prompt: String,
-        new_chat: bool,
         timeout_secs: u64,
         model: Option<String>,
         format: Option<String>,
     ) -> Result<String, BridgeError> {
         self.ensure_chatgpt_ready().await?;
+        self.ensure_temp_chat_on().await?;
         let client = self.cdp().await?;
         let fmt = format.as_deref().unwrap_or("markdown");
 
-        if method == Method::NewChat {
-            let result = client.evaluate(js::call_new_chat()).await?;
-            if let Some(err) = result.get("error") {
-                return Err(BridgeError::ExtensionError(
-                    err["message"].as_str().unwrap_or("unknown error").to_string(),
-                ));
-            }
-            return Ok("New chat started.".to_string());
-        }
-
-        // Model selection
         if let Some(ref model_name) = model {
             info!("selecting model: {}", model_name);
             let _ = client.evaluate(js::call_click_model_button()).await;
@@ -227,13 +211,6 @@ impl Bridge {
             sleep(Duration::from_millis(500)).await;
         }
 
-        // New chat if requested
-        if new_chat {
-            let _ = client.evaluate(js::call_new_chat()).await;
-            sleep(Duration::from_millis(1000)).await;
-        }
-
-        // Send prompt
         let send_result = client.evaluate(&js::call_send_prompt(&prompt)).await?;
         if let Some(err) = send_result.get("error") {
             return Err(BridgeError::ExtensionError(
@@ -241,7 +218,6 @@ impl Bridge {
             ));
         }
 
-        // Poll for response
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs.min(90));
         let mut last_text = String::new();
         let mut stable_count = 0u32;
@@ -281,18 +257,16 @@ impl Bridge {
 
     pub async fn request_streaming(
         &self,
-        _method: Method,
         prompt: String,
-        new_chat: bool,
         timeout_secs: u64,
         model: Option<String>,
         format: Option<String>,
     ) -> Result<StreamHandle, BridgeError> {
         self.ensure_chatgpt_ready().await?;
+        self.ensure_temp_chat_on().await?;
         let client = self.cdp().await?;
         let fmt = format.as_deref().unwrap_or("markdown").to_string();
 
-        // Model selection
         if let Some(ref model_name) = model {
             let _ = client.evaluate(js::call_click_model_button()).await;
             sleep(Duration::from_millis(500)).await;
@@ -300,21 +274,12 @@ impl Bridge {
             sleep(Duration::from_millis(500)).await;
         }
 
-        // New chat
-        if new_chat {
-            let _ = client.evaluate(js::call_new_chat()).await;
-            sleep(Duration::from_millis(1000)).await;
-        }
-
-        // Send prompt
         let send_result = client.evaluate(&js::call_send_prompt(&prompt)).await?;
         if let Some(err) = send_result.get("error") {
             return Err(BridgeError::ExtensionError(
                 err["message"].as_str().unwrap_or("failed to send prompt").to_string(),
             ));
         }
-
-        self.inner.has_active_chat.store(true, Ordering::Relaxed);
 
         let (partial_tx, partial_rx) = broadcast::channel::<String>(32);
         let (result_tx, result_rx) = oneshot::channel();
@@ -379,6 +344,7 @@ impl Bridge {
             ));
         }
 
+        self.inner.temp_chat_on.store(enabled, Ordering::Relaxed);
         let state = result.get("state").and_then(|s| s.as_str()).unwrap_or(if enabled { "on" } else { "off" });
         Ok(if state == "on" {
             "Temporary chat enabled.".to_string()

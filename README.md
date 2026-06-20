@@ -1,82 +1,90 @@
 # CodexDCP — Codex Developer Chaos Platform
 
-MCP-коннектор, который превращает браузерный ChatGPT в Codex-подобного агента для OpenCode. Rust MCP-сервер через stdio + WebSocket bridge к Chrome-расширению, которое управляет веб-интерфейсом ChatGPT. Включает OpenAI-совместимый HTTP-провайдер для использования ChatGPT как модели.
+MCP-коннектор, который превращает браузерный ChatGPT в Codex-подобного агента для OpenCode. Rust MCP-сервер через stdio + Chrome DevTools Protocol (CDP) управляет headless Chrome, который работает с веб-интерфейсом ChatGPT. Включает OpenAI-совместимый HTTP-провайдер.
 
 ## Архитектура
 
 ```
-┌─────────────┐      stdio (MCP)     ┌──────────────────────┐     WebSocket     ┌─────────────────────┐
-│   OpenCode    │  ──────────────────> │      CodexDCP         │  <────────────>  │  Chrome extension   │
-│  (MCP client) │                      │  (Rust MCP server)    │                  │  (content script)   │
-└─────────────┘                        └──────────────────────┘                  └─────────────────────┘
-                                              │                                          │
-                                              │ HTTP (OpenAI API)                        │ DOM
-                                              ▼                                          ▼
-                                     ┌──────────────────────┐                 ┌─────────────────────┐
-                                     │  HTTP provider :8766  │                 │   chatgpt.com       │
-                                     └──────────────────────┘                 └─────────────────────┘
+┌─────────────┐      stdio (MCP)     ┌──────────────────────┐     CDP WebSocket     ┌─────────────────────┐
+│   OpenCode    │  ──────────────────> │      CodexDCP         │  <────────────────>  │  Headless Chrome    │
+│  (MCP client) │                      │  (Rust MCP server)    │   Runtime.evaluate   │  (Brave/Chromium)   │
+└─────────────┘                        └──────────────────────┘                      └─────────────────────┘
+                                               │                                              │
+                                               │ HTTP (OpenAI API)                            │ DOM
+                                               ▼                                              ▼
+                                      ┌──────────────────────┐                   ┌─────────────────────┐
+                                      │  HTTP provider :8766  │                   │   chatgpt.com       │
+                                      └──────────────────────┘                   └─────────────────────┘
 ```
 
-- **Rust MCP server** — реализует протокол MCP через stdio, предоставляет инструменты `chatgpt_coder`, `chatgpt_ask`, `chatgpt_new_chat`, `chatgpt_status`.
-- **WebSocket bridge** — внутри сервера, слушает `ws://127.0.0.1:8765`, маршрутизирует запросы/ответы, ретраи, стриминг.
+- **Rust MCP server** — реализует протокол MCP через stdio, предоставляет инструменты `chatgpt_coder`, `chatgpt_ask`, `chatgpt_temp_chat_on`, `chatgpt_temp_chat_off`, `chatgpt_status`.
+- **CDP bridge** — внутри сервера, запускает headless Chrome, подключается через DevTools Protocol, выполняет JS через `Runtime.evaluate`.
 - **HTTP provider** — OpenAI-совместимый API на порту 8766 (`/v1/chat/completions`, `/v1/models`, `/health`), поддерживает streaming (SSE).
-- **Chrome/Edge расширение** — подключается к серверу через WebSocket, управляет вкладкой ChatGPT через DOM, конвертирует HTML в markdown, выбирает модели.
+- **Headless Chrome** — запускается как child-процесс, использует persistent profile для переиспользования cookies/login сессии.
 
 ## Возможности
 
+- **Headless Chrome** — браузер работает в фоне, не отвлекает пользователя
+- **Временный чат** — все запросы идут в temporary chat (история не сохраняется)
+- **Cookie reuse** — профиль Brave/Chrome копируется один раз, логин не требуется
+- **Anti-detection** — `--disable-blink-features=AutomationControlled` обходит Cloudflare
 - **MCP-инструменты** — делегируй задачи по коду и вопросы в ChatGPT прямо из OpenCode
 - **HTTP-провайдер** — используй ChatGPT как модель-провайдер (OpenAI-совместимый API)
-- **Sticky-chat режим** — все запросы в один разговор, без необходимости передавать `new_chat: false`
 - **Выбор модели** — передавай `model: "GPT-4o"`, `"o1"`, и т.д.
 - **Сохранение markdown** — ответы сохраняют code blocks, заголовки, ссылки, таблицы
 - **Стриминг** — частичные ответы через SSE для HTTP-провайдера
 - **Ретраи с backoff** — автоматический повтор при временных ошибках
-- **Настраиваемые селекторы** — DOM-селекторы в `selectors.json`, обновляй без правки кода
 - **Кастомный system prompt** — через CLI-флаг или env-переменную
-- **Graceful shutdown** — Ctrl+C корректно останавливает все компоненты
+- **Graceful shutdown** — Ctrl+C корректно останавливает Chrome и сервер
 
 ## Требования
 
 - Rust >= 1.85 (edition 2024; проверено на 1.96)
-- Chrome, Edge, Brave или другой Chromium-браузер
-- Аккаунт ChatGPT с открытой вкладкой `https://chatgpt.com`
+- Chrome, Brave или Chromium браузер
+- Аккаунт ChatGPT (активная сессия в браузере для копирования cookies)
 - OpenCode с поддержкой MCP
 
 ## Установка
 
 ### Шаг 1. Получить бинарник
 
-**Вариант A — предсобранный (без Rust):**
-
-Скачайте бинарник со страницы [Releases](https://github.com/anomalyco/codexdcp/releases) под вашу платформу:
+**Вариант A — из исходников:**
 
 ```bash
-# macOS Apple Silicon
-curl -L https://github.com/anomalyco/codexdcp/releases/latest/download/codexdcp-aarch64-apple-darwin -o codexdcp
-# macOS Intel
-curl -L https://github.com/anomalyco/codexdcp/releases/latest/download/codexdcp-x86_64-apple-darwin -o codexdcp
-# Linux
-curl -L https://github.com/anomalyco/codexdcp/releases/latest/download/codexdcp-x86_64-unknown-linux-gnu -o codexdcp
-chmod +x codexdcp
-```
-
-**Вариант B — из исходников:**
-
-```bash
-git clone https://github.com/anomalyco/codexdcp.git
+git clone https://github.com/DurkaEbanaya/codexdcp.git
 cd codexdcp
 cargo build --release
 # Бинарник: target/release/codexdcp
 ```
 
-### Шаг 2. Установить расширение
+**Вариант B — предсобранный:**
 
-1. Откройте `chrome://extensions` (или `brave://extensions`)
-2. Включите **Режим разработчика** (Developer mode)
-3. Нажмите **Загрузить распакованное** (Load unpacked)
-4. Выберите папку `browser_extension/` из репозитория
-5. Откройте `https://chatgpt.com` и авторизуйтесь
-6. В консоли service worker должно появиться: `[CodexDCP] connected`
+Скачайте со страницы [Releases](https://github.com/DurkaEbanaya/codexdcp/releases).
+
+### Шаг 2. Скопировать cookies из браузера
+
+CodexDCP использует отдельный профиль Chrome, в который нужно один раз скопировать cookies из вашего браузера:
+
+```bash
+# Создаём профиль
+mkdir -p ~/.codexdcp/chrome-profile/Default
+
+# Копируем cookies и localStorage из Brave
+BRAVE="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Default"
+cp "$BRAVE/Cookies" ~/.codexdcp/chrome-profile/Default/
+cp "$BRAVE/Login Data" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
+cp -r "$BRAVE/Local Storage" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
+cp "$BRAVE/Preferences" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
+
+# Для Chrome вместо Brave:
+# CHROME="$HOME/Library/Application Support/Google/Chrome/Default"
+```
+
+Альтернатива — запустить один раз с `--visible`, залогиниться вручную и закрыть:
+
+```bash
+./target/release/codexdcp --visible --chrome-path "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+```
 
 ### Шаг 3. Настроить OpenCode
 
@@ -90,7 +98,8 @@ cargo build --release
       "command": [
         "/ABSOLUTE/PATH/TO/codexdcp",
         "--http-port", "8766",
-        "--sticky-chat"
+        "--cdp-port", "9222",
+        "--chrome-path", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
       ],
       "enabled": true
     }
@@ -98,11 +107,9 @@ cargo build --release
 }
 ```
 
-Замените `/ABSOLUTE/PATH/TO/` на реальный путь к бинарнику.
+Укажите путь к вашему браузеру через `--chrome-path`. Если не указать, бинарник попытается автоопределить.
 
 ### Шаг 4. (Опционально) Подключить как провайдер моделей
-
-Добавьте в секцию `provider`:
 
 ```jsonc
 {
@@ -123,9 +130,7 @@ cargo build --release
 }
 ```
 
-### Шаг 5. (Опционально) Команды и ключевые слова
-
-Добавьте в секцию `command`:
+### Шаг 5. (Опционально) Slash-команды
 
 ```jsonc
 {
@@ -138,37 +143,29 @@ cargo build --release
       "description": "Задать вопрос ChatGPT",
       "template": "Use the chatgpt_ask MCP tool to ask: $ARGUMENTS"
     },
-    "дальше": {
-      "description": "Продолжить разговор в ChatGPT",
-      "template": "Use chatgpt_ask with new_chat=false to continue: $ARGUMENTS"
+    "временный-чат-вкл": {
+      "description": "Включить временный чат",
+      "template": "Use chatgpt_temp_chat_on to enable temporary chat"
     },
-    "новый-чат": {
-      "description": "Начать новый чат ChatGPT",
-      "template": "Use chatgpt_new_chat to start a new chat"
+    "временный-чат-выкл": {
+      "description": "Выключить временный чат",
+      "template": "Use chatgpt_temp_chat_off to disable temporary chat"
     }
   }
 }
-```
-
-### Шаг 6. Перезапустить OpenCode
-
-```bash
-opencode
-```
-
-Проверьте: скажите OpenCode "проверь статус ChatGPT" — должно вернуть:
-```
-ChatGPT browser extension is connected. [sticky: active conversation]
 ```
 
 ## Инструменты MCP
 
 | Инструмент | Описание | Параметры |
 |---|---|---|
-| `chatgpt_coder` | Делегировать задачу по коду (Codex-style) | `task`, `context`, `language`, `new_chat`, `model`, `format` |
-| `chatgpt_ask` | Задать общий вопрос | `prompt`, `new_chat`, `model`, `format` |
-| `chatgpt_new_chat` | Начать новый чат | — |
+| `chatgpt_coder` | Делегировать задачу по коду (Codex-style) | `task`, `context`, `language`, `model`, `format` |
+| `chatgpt_ask` | Задать общий вопрос | `prompt`, `model`, `format` |
+| `chatgpt_temp_chat_on` | Включить временный чат | — |
+| `chatgpt_temp_chat_off` | Выключить временный чат | — |
 | `chatgpt_status` | Проверить статус подключения | — |
+
+Временный чат включается автоматически при каждой отправке запроса. Используйте `chatgpt_temp_chat_off` только если нужно отключить этот режим.
 
 ## HTTP API
 
@@ -200,51 +197,52 @@ curl http://127.0.0.1:8766/v1/chat/completions \
 ### Health
 ```bash
 curl http://127.0.0.1:8766/health
-# → {"status":"ok","connected":true,"has_active_chat":false}
+# → {"status":"ok","connected":true,"mode":"temporary_chat"}
 ```
 
 ## CLI-флаги
 
 ```
---ws-host          127.0.0.1    хост WebSocket
---ws-port          8765         порт WebSocket
 --http-host        127.0.0.1    хост HTTP-провайдера
 --http-port        0            порт HTTP (0 = выключен)
 --default-timeout  120          таймаут ответа ChatGPT (сек)
 --system-prompt    -            кастомный системный промпт
 --max-retries      2            кол-во ретраев
 --retry-delay-ms   2000         начальная задержка ретрая (мс)
---sticky-chat                   режим одного чата
+--chrome-path      -            путь к Chrome/Brave/Chromium
+--chrome-profile   ~/.codexdcp/chrome-profile  путь к user-data-dir
+--headless         true         headless режим Chrome
+--cdp-port         9222         порт DevTools Protocol
+--visible                       запустить Chrome с видимым окном (для логина)
+--selectors-path   -            путь к кастомным селекторам
 --log-level        info         уровень логирования
 ```
 
 Все флаги также доступны через env-переменные (`CODEXDCP_*` или `CHATGPT_BRIDGE_*`).
 
-## Настраиваемые селекторы
-
-DOM-селекторы вынесены в `browser_extension/selectors.json`. Когда ChatGPT меняет вёрстку, обновите JSON и перезагрузите расширение — править код не нужно.
-
 ## Отладка
 
 - Бинарник с debug-логами: `codexdcp --log-level debug`
-- Логи расширения: `chrome://extensions` → service worker → Console
-- Проверка порта: `lsof -i :8765`
+- Видимый Chrome для дебага: `codexdcp --visible --log-level debug`
+- Проверка CDP: `curl http://127.0.0.1:9222/json/version`
 - Проверка HTTP: `curl http://127.0.0.1:8766/health`
+- Логи Chrome наследуются в stderr codexdcp
 
 ## Безопасность и ограничения
 
-- Это прототип, а не production-решение. DOM ChatGPT меняется, расширение может потребовать обновления селекторов.
-- Расширение управляет вашей сессией ChatGPT. Устанавливайте только если доверяете коду.
+- DOM ChatGPT может меняться — селекторы обновляются в `src/js.rs` (`DEFAULT_SELECTORS`).
+- Профиль Chrome содержит cookies с доступом к ChatGPT. Не коммитьте `~/.codexdcp/chrome-profile/`.
 - Автоматизация веб-интерфейса ChatGPT может нарушать Terms of Service OpenAI. Используйте на свой страх и риск.
-- Поддерживается один браузерный клиент; при нескольких вкладках используется последняя подключившаяся.
+- Headless Chrome запускается как child-процесс и завершается при остановке сервера.
 
 ## Разработка
 
 ```bash
-cargo build          # сборка
-cargo test           # тесты
-cargo clippy --tests -- -D warnings  # линтер
-cargo run -- --help  # запуск
+cargo build --release                      # сборка
+cargo test                                 # тесты
+cargo clippy --tests -- -D warnings        # линтер
+cargo run -- --help                        # помощь
+cargo run -- --visible --log-level debug   # запуск с видимым Chrome
 ```
 
 ## Лицензия

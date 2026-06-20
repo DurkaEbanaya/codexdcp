@@ -49,7 +49,6 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/codexdcp dist/
-          cp -r browser_extension dist/
           cp README.md dist/
           cp LICENSE dist/
           cd dist

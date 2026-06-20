@@ -48,7 +48,6 @@ async fn main() -> Result<()> {
         bridge,
         config.default_timeout,
         config.system_prompt,
-        config.sticky_chat,
     );
     let service = server.serve(stdio()).await?;
 

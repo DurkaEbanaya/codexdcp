@@ -63,17 +63,6 @@ pub const INIT_SCRIPT: &str = r#"
     return convertNode(element).trim();
   }
 
-  async function pageNewChat() {
-    let btn = null;
-    for (const sel of (sels.newChatButton || [])) { btn = document.querySelector(sel); if (btn) break; }
-    if (!btn) {
-      const texts = sels.newChatText || ['New chat'];
-      btn = Array.from(document.querySelectorAll('button, a')).find(b => texts.some(t => b.textContent.includes(t)));
-    }
-    if (btn) { btn.click(); await sleep(1000); return { ok: true }; }
-    return { error: { message: 'New chat button not found.' } };
-  }
-
   async function pageSendPrompt(prompt) {
     function findPromptInput() {
       for (const sel of (sels.promptInput || [])) { const el = document.querySelector(sel); if (el) return el; }
@@ -200,16 +189,12 @@ pub const INIT_SCRIPT: &str = r#"
     return { error: { message: 'Temporary chat toggle not found in ChatGPT UI.' } };
   }
 
-  window.__codexdcp = { pageNewChat, pageSendPrompt, pageReadAndCheck, pageClickModelButton, pageSelectModel, pageSetTempChat };
+  window.__codexdcp = { pageSendPrompt, pageReadAndCheck, pageClickModelButton, pageSelectModel, pageSetTempChat };
 })();
 "#;
 
 pub fn init_script(selectors_json: &str) -> String {
     INIT_SCRIPT.replace("__SELECTORS__", selectors_json)
-}
-
-pub fn call_new_chat() -> &'static str {
-    "window.__codexdcp && window.__codexdcp.pageNewChat()"
 }
 
 pub fn call_send_prompt(prompt: &str) -> String {
@@ -243,8 +228,6 @@ pub const DEFAULT_SELECTORS: &str = r#"{
   "promptInput": ["textarea#prompt-textarea", "div[contenteditable=\"true\"]", "textarea"],
   "sendButton": ["button[data-testid=\"send-button\"]", "button[aria-label*=\"Send\"]", "button[aria-label*=\"send\"]"],
   "stopButton": ["button[data-testid=\"stop-button\"]", "button[aria-label*=\"Stop\"]", "button[aria-label*=\"stop\"]"],
-  "newChatButton": ["button[data-testid=\"create-new-chat-button\"]", "a[href=\"/\"]"],
-  "newChatText": ["New chat", "Новый чат"],
   "assistantMessage": ["[data-message-author-role=\"assistant\"]"],
   "conversationTurn": ["[data-testid^=\"conversation-turn-\"]"],
   "markdownContainer": ["div.markdown", "div.prose", "div[class*=\"markdown\"]"],

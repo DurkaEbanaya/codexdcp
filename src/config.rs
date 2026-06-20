@@ -33,10 +33,6 @@ pub struct Config {
     #[arg(long, env = "CHATGPT_BRIDGE_RETRY_DELAY_MS", default_value_t = 2000)]
     pub retry_delay_ms: u64,
 
-    /// Sticky chat mode: all messages go to one ChatGPT conversation.
-    #[arg(long, env = "CHATGPT_BRIDGE_STICKY_CHAT", default_value_t = false)]
-    pub sticky_chat: bool,
-
     /// Path to Chrome/Brave/Chromium binary (auto-detected if not specified).
     #[arg(long, env = "CODEXDCP_CHROME_PATH")]
     pub chrome_path: Option<String>,

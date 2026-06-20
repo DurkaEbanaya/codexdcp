@@ -1,4 +1,4 @@
-use crate::bridge::{Bridge, Method, StreamHandle};
+use crate::bridge::{Bridge, StreamHandle};
 use crate::prompt::conversation_prompt;
 use async_stream::stream;
 use axum::{
@@ -161,9 +161,7 @@ async fn non_streaming_response(
     match state
         .bridge
         .request(
-            Method::SendMessage,
             prompt,
-            true,
             timeout,
             model.clone(),
             Some(format),
@@ -215,9 +213,7 @@ async fn streaming_response(
     let handle = match state
         .bridge
         .request_streaming(
-            Method::SendMessage,
             prompt,
-            true,
             timeout,
             model.clone(),
             Some(format),
@@ -397,11 +393,10 @@ async fn list_models() -> Json<serde_json::Value> {
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let connected = state.bridge.is_connected().await;
-    let has_chat = state.bridge.has_active_chat();
     Json(serde_json::json!({
         "status": "ok",
         "connected": connected,
-        "has_active_chat": has_chat
+        "mode": "temporary_chat"
     }))
 }
 
