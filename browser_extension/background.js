@@ -22,6 +22,8 @@ const DEFAULT_SELECTORS = {
   userMarker: ['[class*="text-message"]', '[data-message-author-role="user"]'],
   modelSelector: ['button[data-testid*="model-selector"]', 'button[aria-haspopup][class*="model"]', 'button[aria-expanded][class*="model"]', 'button[data-testid="model-switcher-button"]'],
   modelDropdownItem: ['[role="menuitem"]', '[role="option"]', 'button[role="menuitemradio"]', 'a[role="menuitem"]'],
+  tempChatButton: ['button[data-testid*="temp-chat"]', 'button[aria-label*="Temporary"]', 'button[aria-label*="temp"]', '[role="switch"][class*="temp"]'],
+  tempChatText: ['Temporary Chat', 'Временный чат', 'Чат без истории', 'Temp chat', 'Чат без сохранения'],
 };
 
 // ─── Selectors loading ───────────────────────────────────────
@@ -121,12 +123,21 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function findChatGPTTab() {
+async function findOrCreateTab() {
   const tabs = await chrome.tabs.query({
     url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
   });
-  if (tabs.length === 0) return null;
-  return tabs.find((t) => t.active) || tabs[0];
+  if (tabs.length > 0) {
+    return tabs.find((t) => t.active) || tabs[0];
+  }
+
+  console.log('[CodexDCP] no ChatGPT tab found, creating hidden background tab');
+  const tab = await chrome.tabs.create({
+    url: 'https://chatgpt.com/',
+    active: false,
+  });
+  await waitForTabLoad(tab.id, 30000);
+  return tab;
 }
 
 function waitForTabLoad(tabId, timeoutMs) {
@@ -163,9 +174,9 @@ async function handleRequest(msg, onPartial) {
   const sels = await ensureSelectors();
   const format = params?.format || 'markdown';
 
-  const tab = await findChatGPTTab();
+  const tab = await findOrCreateTab();
   if (!tab || !tab.id) {
-    return { type: 'response', id, error: { message: 'No ChatGPT tab found. Open https://chatgpt.com.' } };
+    return { type: 'response', id, error: { message: 'Failed to find or create a ChatGPT tab.' } };
   }
 
   // ── new_chat: just click the button ──
@@ -178,6 +189,30 @@ async function handleRequest(msg, onPartial) {
         world: 'MAIN',
       });
       return { type: 'response', id, result: { text: 'New chat started.' } };
+    } catch (err) {
+      return { type: 'response', id, error: { message: err.message } };
+    }
+  }
+
+  // ── set_temp_chat: toggle temporary chat on/off ──
+  if (method === 'set_temp_chat') {
+    const enabled = params?.temp_chat_enabled ?? true;
+    try {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: pageSetTempChat,
+        args: [enabled, sels],
+        world: 'MAIN',
+      });
+      const r = result?.[0]?.result;
+      if (r?.error) {
+        return { type: 'response', id, error: r.error };
+      }
+      return {
+        type: 'response',
+        id,
+        result: { text: r?.state === 'on' ? 'Temporary chat enabled.' : 'Temporary chat disabled.' },
+      };
     } catch (err) {
       return { type: 'response', id, error: { message: err.message } };
     }
@@ -574,6 +609,70 @@ async function pageSelectModel(modelName, sels) {
     }
   }
   return false;
+}
+
+// ─── Injected: toggle temporary chat ────────────────────────
+
+async function pageSetTempChat(enabled, sels) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const texts = sels.tempChatText || ['Temporary Chat', 'Временный чат'];
+
+  function isElementChecked(el) {
+    return el.getAttribute('aria-checked') === 'true' ||
+           el.getAttribute('data-state') === 'on' ||
+           el.getAttribute('aria-pressed') === 'true' ||
+           el.classList.contains('active');
+  }
+
+  function findTempChatElement() {
+    for (const sel of (sels.tempChatButton || [])) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    const interactive = document.querySelectorAll(
+      'button, [role="menuitem"], [role="menuitemcheckbox"], [role="switch"], [role="option"], a, label'
+    );
+    for (const el of interactive) {
+      const text = el.textContent?.trim().toLowerCase() || '';
+      if (text.length < 100 && texts.some((t) => text.includes(t.toLowerCase()))) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  let el = findTempChatElement();
+  if (el) {
+    const isChecked = isElementChecked(el);
+    if (enabled !== isChecked) {
+      el.click();
+      await sleep(500);
+    }
+    return { ok: true, state: enabled ? 'on' : 'off' };
+  }
+
+  const menuButtons = document.querySelectorAll('button[aria-haspopup], button[aria-expanded]');
+  for (const menuBtn of menuButtons) {
+    try {
+      menuBtn.click();
+      await sleep(400);
+      el = findTempChatElement();
+      if (el) {
+        const isChecked = isElementChecked(el);
+        if (enabled !== isChecked) {
+          el.click();
+          await sleep(500);
+        }
+        document.body.click();
+        await sleep(200);
+        return { ok: true, state: enabled ? 'on' : 'off' };
+      }
+      document.body.click();
+      await sleep(200);
+    } catch {}
+  }
+
+  return { error: { message: 'Temporary chat toggle not found in ChatGPT UI.' } };
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────

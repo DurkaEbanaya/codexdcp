@@ -149,6 +149,24 @@ impl ChatGptServer {
             .map_err(|e| e.to_string())
     }
 
+    #[tool(description = "Enable temporary chat in ChatGPT (responses won't be saved to history). \
+                         Use when the user says: включить временный чат, temp chat on, temporary chat on.")]
+    async fn chatgpt_temp_chat_on(&self) -> Result<String, String> {
+        self.bridge
+            .request_set_temp_chat(true)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    #[tool(description = "Disable temporary chat in ChatGPT (responses will be saved to history normally). \
+                         Use when the user says: выключить временный чат, temp chat off, temporary chat off.")]
+    async fn chatgpt_temp_chat_off(&self) -> Result<String, String> {
+        self.bridge
+            .request_set_temp_chat(false)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     #[tool(description = "Check whether the ChatGPT browser extension is connected and report conversation status.")]
     async fn chatgpt_status(&self) -> String {
         let connected = self.bridge.is_connected().await;

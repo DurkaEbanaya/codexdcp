@@ -45,5 +45,18 @@
     "[role=\"option\"]",
     "button[role=\"menuitemradio\"]",
     "a[role=\"menuitem\"]"
+  ],
+  "tempChatButton": [
+    "button[data-testid*=\"temp-chat\"]",
+    "button[aria-label*=\"Temporary\"]",
+    "button[aria-label*=\"temp\"]",
+    "[role=\"switch\"][class*=\"temp\"]"
+  ],
+  "tempChatText": [
+    "Temporary Chat",
+    "Временный чат",
+    "Чат без истории",
+    "Temp chat",
+    "Чат без сохранения"
   ]
 }

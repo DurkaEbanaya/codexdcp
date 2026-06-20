@@ -23,6 +23,7 @@ const IPC_SOCKET_PATH: &str = "/tmp/codexdcp.sock";
 pub enum Method {
     SendMessage,
     NewChat,
+    SetTempChat,
 }
 
 impl Method {
@@ -30,6 +31,7 @@ impl Method {
         match self {
             Method::SendMessage => "send_message",
             Method::NewChat => "new_chat",
+            Method::SetTempChat => "set_temp_chat",
         }
     }
 }
@@ -57,6 +59,8 @@ struct RequestParams {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temp_chat_enabled: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -206,6 +210,41 @@ impl Bridge {
             .await
     }
 
+    /// Toggle temporary chat on or off.
+    pub async fn request_set_temp_chat(&self, enabled: bool) -> Result<String, BridgeError> {
+        let id = Uuid::new_v4().to_string();
+        let params = RequestParams {
+            prompt: String::new(),
+            new_chat: None,
+            timeout: 30,
+            model: None,
+            format: None,
+            temp_chat_enabled: Some(enabled),
+        };
+        let message = ServerMessage::Request {
+            id: id.clone(),
+            method: Method::SetTempChat.as_str(),
+            params,
+        };
+        let json = serde_json::to_string(&message)
+            .map_err(|e| BridgeError::SendError(e.to_string()))?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.inner.pending.lock().await.insert(id.clone(), response_tx);
+
+        self.send_to_client(&id, json).await?;
+
+        let total_timeout = Duration::from_secs(40);
+        let outcome = match timeout(total_timeout, response_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(BridgeError::NotConnected),
+            Err(_) => Err(BridgeError::Timeout(30)),
+        };
+
+        self.inner.pending.lock().await.remove(&id);
+        outcome.map(|r| r.text)
+    }
+
     /// Single-attempt request (no retry).
     async fn request_once(
         &self,
@@ -280,6 +319,7 @@ impl Bridge {
             timeout: timeout_secs,
             model: model.clone(),
             format: format.clone(),
+            temp_chat_enabled: None,
         };
         let message = ServerMessage::Request {
             id: id.clone(),
