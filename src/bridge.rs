@@ -120,6 +120,22 @@ impl Bridge {
         }
 
         let client = self.cdp().await?;
+
+        // Wait for ChatGPT page to finish loading (Cloudflare + SPA)
+        for attempt in 0..15 {
+            let title_result = client.evaluate("document.title").await;
+            let title = title_result
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default();
+
+            if !title.contains("Один момент") && !title.is_empty() {
+                break;
+            }
+            info!("waiting for ChatGPT to load (attempt {})...", attempt + 1);
+            sleep(Duration::from_secs(2)).await;
+        }
+
         let script = js::init_script(&self.inner.selectors);
         client.evaluate(&script).await?;
 

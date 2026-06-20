@@ -52,6 +52,12 @@ impl ChromeProcess {
                 .map_err(|e| BridgeError::ChromeError(format!("failed to create profile dir: {}", e)))?;
         }
 
+        // Remove stale singleton lock files from previous crashed instances
+        for lock_file in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+            let lock_path = config.chrome_profile.join(lock_file);
+            let _ = std::fs::remove_file(&lock_path);
+        }
+
         let mut args = vec![
             format!("--remote-debugging-port={}", port),
             format!("--user-data-dir={}", config.chrome_profile.display()),
@@ -61,6 +67,8 @@ impl ChromeProcess {
             "--mute-audio".to_string(),
             "--disable-popup-blocking".to_string(),
             "--window-size=1280,720".to_string(),
+            "--disable-blink-features=AutomationControlled".to_string(),
+            "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36".to_string(),
         ];
 
         if config.headless && !config.visible {
@@ -69,19 +77,33 @@ impl ChromeProcess {
 
         info!("launching Chrome: {} {}", chrome_path, args.join(" "));
 
-        let child = tokio::process::Command::new(&chrome_path)
+        let mut child = tokio::process::Command::new(&chrome_path)
             .args(&args)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .map_err(|e| BridgeError::ChromeError(format!("failed to launch Chrome: {}", e)))?;
 
-        let mut me = Self { child, port };
-
         // Wait for Chrome's debug port to be ready
-        let ready = timeout(Duration::from_secs(15), async {
+        let ready = timeout(Duration::from_secs(20), async {
             loop {
-                if cdp_http_get(CDP_HOST, port, "/json/version").await.is_ok() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        warn!("Chrome process exited early with status: {}", status);
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("failed to check Chrome process status: {}", e);
+                        return;
+                    }
+                }
+                // Just check if TCP port is connectable — Chrome's HTTP endpoint
+                // keeps connections open which causes read_to_end to hang.
+                if tokio::net::TcpStream::connect(format!("{}:{}", CDP_HOST, port))
+                    .await
+                    .is_ok()
+                {
                     return;
                 }
                 sleep(Duration::from_millis(300)).await;
@@ -90,14 +112,14 @@ impl ChromeProcess {
         .await;
 
         if ready.is_err() {
-            me.kill().await;
+            let _ = child.kill().await;
             return Err(BridgeError::ChromeError(
-                "Chrome debug port did not become ready within 15s".to_string(),
+                "Chrome debug port did not become ready within 20s".to_string(),
             ));
         }
 
         info!("Chrome is ready on port {}", port);
-        Ok(me)
+        Ok(Self { child, port })
     }
 
     pub async fn kill(&mut self) {
@@ -112,35 +134,43 @@ impl Drop for ChromeProcess {
 }
 
 async fn cdp_http_get(host: &str, port: u16, path: &str) -> Result<serde_json::Value, BridgeError> {
-    cdp_http_request(host, port, "GET", path).await
-}
-
-async fn cdp_http_put(host: &str, port: u16, path: &str) -> Result<serde_json::Value, BridgeError> {
-    cdp_http_request(host, port, "PUT", path).await
-}
-
-async fn cdp_http_request(
-    host: &str,
-    port: u16,
-    method: &str,
-    path: &str,
-) -> Result<serde_json::Value, BridgeError> {
     let mut stream = TcpStream::connect(format!("{}:{}", host, port))
         .await
         .map_err(|e| BridgeError::CdpError(format!("failed to connect to Chrome debug port: {}", e)))?;
 
     let request = format!(
-        "{} {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        method, path, host, port
+        "GET {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        path, host, port
     );
     stream.write_all(request.as_bytes()).await.map_err(|e| {
         BridgeError::CdpError(format!("failed to send HTTP request: {}", e))
     })?;
 
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await.map_err(|e| {
-        BridgeError::CdpError(format!("failed to read HTTP response: {}", e))
-    })?;
+    // Read with timeout instead of read_to_end (Chrome may keep connection open)
+    let mut buf = Vec::with_capacity(8192);
+    let read_result = timeout(Duration::from_secs(5), async {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    // Check if we got the full JSON response (ends with })
+                    let response = String::from_utf8_lossy(&buf);
+                    if let Some(body_start) = response.find("\r\n\r\n") {
+                        let body = &response[body_start + 4..];
+                        if body.trim_end().ends_with(']') || body.trim_end().ends_with('}') {
+                            return;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    })
+    .await;
+
+    let _ = read_result;
 
     let response = String::from_utf8_lossy(&buf);
     let body_start = response.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
@@ -193,16 +223,18 @@ impl CdpClient {
             t.tab_type == "page" && (t.url.contains("chatgpt.com") || t.url.contains("chat.openai.com"))
         });
 
-        let tab_ws_url = if let Some(tab) = chatgpt_tab {
+        let (tab_ws_url, needs_navigate) = if let Some(tab) = chatgpt_tab {
             info!("found existing ChatGPT tab: {}", tab.url);
-            tab.webSocketDebuggerUrl.clone()
+            (tab.webSocketDebuggerUrl.clone(), false)
         } else {
-            info!("no ChatGPT tab found, creating one");
-            let new_tab: TabInfo = serde_json::from_value(
-                cdp_http_put(CDP_HOST, port, "/json/new?https://chatgpt.com/").await?,
-            )
-            .map_err(|e| BridgeError::CdpError(format!("failed to parse new tab response: {}", e)))?;
-            new_tab.webSocketDebuggerUrl
+            // Use the first available page tab (usually newtab) and navigate it
+            let page_tab = tabs.iter().find(|t| t.tab_type == "page");
+            if let Some(tab) = page_tab {
+                info!("using existing tab and navigating to ChatGPT: {}", tab.url);
+                (tab.webSocketDebuggerUrl.clone(), true)
+            } else {
+                return Err(BridgeError::CdpError("no page tab available in Chrome".to_string()));
+            }
         };
 
         if tab_ws_url.is_empty() {
@@ -283,6 +315,12 @@ impl CdpClient {
         client.send_command("Runtime.enable", serde_json::json!({})).await?;
         client.send_command("Page.enable", serde_json::json!({})).await?;
 
+        // Navigate to ChatGPT if we're using a non-ChatGPT tab
+        if needs_navigate {
+            info!("navigating tab to ChatGPT");
+            client.navigate("https://chatgpt.com/").await?;
+        }
+
         Ok(client)
     }
 
@@ -340,8 +378,7 @@ impl CdpClient {
     pub async fn navigate(&self, url: &str) -> Result<(), BridgeError> {
         self.send_command("Page.navigate", serde_json::json!({ "url": url }))
             .await?;
-        // Wait for page to settle
-        sleep(Duration::from_secs(3)).await;
+        sleep(Duration::from_secs(15)).await;
         Ok(())
     }
 
