@@ -12,4 +12,12 @@ pub enum BridgeError {
     SendError(String),
     #[error("invalid response from the extension: {0}")]
     InvalidResponse(String),
+    #[error("CDP protocol error: {0}")]
+    CdpError(String),
+    #[error("Chrome process error: {0}")]
+    ChromeError(String),
+    #[error("JavaScript evaluation error: {0}")]
+    JsError(String),
+    #[error("selectors file error: {0}")]
+    SelectorsError(String),
 }

@@ -18,13 +18,15 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let bridge = Bridge::new(config.clone());
+    let selectors = config.selectors();
+    let bridge = Bridge::new(selectors, config.max_retries, config.retry_delay_ms);
 
-    // Start WebSocket bridge
+    // Launch Chrome and connect via CDP
+    let chrome_config = config.chrome_config();
     let bridge_runner = bridge.clone();
     tokio::spawn(async move {
-        if let Err(e) = bridge_runner.start().await {
-            warn!("bridge server stopped: {}", e);
+        if let Err(e) = bridge_runner.start(&chrome_config).await {
+            warn!("bridge failed to start: {}", e);
         }
     });
 
@@ -50,7 +52,7 @@ async fn main() -> Result<()> {
     );
     let service = server.serve(stdio()).await?;
 
-    info!("ChatGPT MCP bridge started; waiting for OpenCode on stdio");
+    info!("CodexDCP started; waiting for OpenCode on stdio");
 
     // Graceful shutdown: wait for MCP service or Ctrl+C
     tokio::select! {

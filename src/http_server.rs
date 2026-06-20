@@ -125,7 +125,7 @@ async fn chat_completions(
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
                 error: ErrorDetail {
-                    message: "ChatGPT browser extension is not connected.".to_string(),
+                    message: "ChatGPT is not connected (Chrome not running).".to_string(),
                     r#type: "server_error".to_string(),
                 },
             }),
@@ -311,7 +311,7 @@ fn streaming_sse(
                 result = &mut handle.result => {
                     match result {
                         Ok(Ok(r)) => {
-                            let delta = r.text.strip_prefix(&prev_text).unwrap_or(&r.text);
+                            let delta = r.strip_prefix(&prev_text).unwrap_or(&r);
                             if !delta.is_empty() {
                                 let chunk = ChatChunk {
                                     id: id.clone(),

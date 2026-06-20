@@ -83,7 +83,7 @@ impl ChatGptServer {
 
 #[tool_router(server_handler)]
 impl ChatGptServer {
-    #[tool(description = "Delegate a coding task to browser ChatGPT (Codex-style). \
+    #[tool(description = "Delegate a coding task to browser ChatGPT via headless Chrome (Codex-style). \
                          Use when the user says: навайбкодь, напиши код, закодь, code, implement, refactor.")]
     async fn chatgpt_coder(
         &self,
@@ -167,7 +167,7 @@ impl ChatGptServer {
             .map_err(|e| e.to_string())
     }
 
-    #[tool(description = "Check whether the ChatGPT browser extension is connected and report conversation status.")]
+    #[tool(description = "Check whether Chrome is running and ChatGPT is connected, and report conversation status.")]
     async fn chatgpt_status(&self) -> String {
         let connected = self.bridge.is_connected().await;
         let has_chat = self.bridge.has_active_chat();
@@ -183,14 +183,14 @@ impl ChatGptServer {
         };
         match (connected, has_chat) {
             (true, true) => format!(
-                "ChatGPT browser extension is connected. Active conversation in progress.{}",
+                "ChatGPT is connected. Active conversation in progress.{}",
                 sticky
             ),
             (true, false) => format!(
-                "ChatGPT browser extension is connected. No active conversation.{}",
+                "ChatGPT is connected. No active conversation.{}",
                 sticky
             ),
-            (false, _) => "ChatGPT browser extension is NOT connected.".to_string(),
+            (false, _) => "ChatGPT is NOT connected (Chrome not running).".to_string(),
         }
     }
 }
