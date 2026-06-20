@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "chatgpt-codex": {
+      "type": "stdio",
+      "command": "/ABSOLUTE/PATH/TO/target/release/codexdcp",
+      "args": ["--http-port", "8766", "--sticky-chat"],
+      "env": []
+    }
+  }
+}

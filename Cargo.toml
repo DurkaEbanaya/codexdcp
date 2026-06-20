@@ -1,0 +1,63 @@
+[package]
+name = "codexdcp"
+version = "0.2.0"
+edition = "2024"
+authors = ["OpenCode Community"]
+description = "CodexDCP — Codex Developer Chaos Platform: MCP connector that turns browser ChatGPT into a Codex-like agent for OpenCode"
+license = "MIT"
+repository = "https://github.com/anomalyco/codexdcp"
+
+[[bin]]
+name = "codexdcp"
+path = "src/main.rs"
+
+[dependencies]
+# MCP Rust SDK
+rmcp = { version = "1.7.0", features = ["server", "macros", "transport-io"] }
+
+# Async runtime
+tokio = { version = "1.49", features = ["full", "signal"] }
+
+# WebSocket server for browser extension
+futures = "0.3.31"
+tokio-tungstenite = "0.26.2"
+
+# HTTP provider server (OpenAI-compatible API)
+axum = "0.8"
+async-stream = "0.3"
+
+# Serialization and JSON Schema
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+schemars = "0.8.21"
+
+# Identifiers
+uuid = { version = "1.12", features = ["v4"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0.100"
+
+# Logging and tracing
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+
+# CLI and configuration
+clap = { version = "4.5", features = ["derive", "env"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+opt-level = "z"
+
+[lints.clippy]
+unwrap_used = "warn"
+panic_in_result_fn = "warn"
+dbg_macro = "warn"
+todo = "warn"
+wildcard_dependencies = "warn"
+clone_on_copy = "warn"
