@@ -10,6 +10,9 @@ use crate::workspace::Workspace;
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct EmptyRequest {}
+
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct CoderRequest {
     #[schemars(description = "Coding task to delegate to ChatGPT. Trigger keywords: навайбкодь, напиши код, code")]
@@ -329,7 +332,7 @@ impl ChatGptServer {
     #[tool(description = "Show git status (short format) for the workspace.")]
     async fn git_status(
         &self,
-        Parameters(_): Parameters<()>,
+        Parameters(_): Parameters<EmptyRequest>,
     ) -> Result<String, String> {
         self.check_git()?;
         git_ops::git_status(&self.workspace)
@@ -348,7 +351,7 @@ impl ChatGptServer {
                           with diff stats.")]
     async fn show_changes(
         &self,
-        Parameters(_): Parameters<()>,
+        Parameters(_): Parameters<EmptyRequest>,
     ) -> Result<String, String> {
         self.check_git()?;
         git_ops::show_changes(&self.workspace)
@@ -370,7 +373,7 @@ impl ChatGptServer {
                           Returns names, descriptions, and source (workspace/user).")]
     async fn list_skills(
         &self,
-        Parameters(_): Parameters<()>,
+        Parameters(_): Parameters<EmptyRequest>,
     ) -> Result<String, String> {
         self.check_skill()?;
         let skills = skill::list_skills(&self.workspace);
@@ -390,7 +393,7 @@ impl ChatGptServer {
                           current-plan, agent-status, implementation-diff, decisions, open-questions, execution-log.")]
     async fn read_handoff(
         &self,
-        Parameters(_): Parameters<()>,
+        Parameters(_): Parameters<EmptyRequest>,
     ) -> Result<String, String> {
         self.check_handoff()?;
         handoff::read_handoff(&self.workspace)
@@ -421,7 +424,7 @@ impl ChatGptServer {
                           Useful for providing context to ChatGPT or other agents.")]
     async fn codex_context(
         &self,
-        Parameters(_): Parameters<()>,
+        Parameters(_): Parameters<EmptyRequest>,
     ) -> Result<String, String> {
         self.check_context()?;
         Ok(self.workspace.codex_context())
@@ -431,7 +434,7 @@ impl ChatGptServer {
                           file tree, git status, diff, AGENTS.md. For models without tool-calling.")]
     async fn export_pro_context(
         &self,
-        Parameters(_): Parameters<()>,
+        Parameters(_): Parameters<EmptyRequest>,
     ) -> Result<String, String> {
         self.check_context()?;
         if !self.writes_enabled {
