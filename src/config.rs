@@ -56,6 +56,10 @@ pub struct Config {
     /// Path to custom selectors.json file.
     #[arg(long)]
     pub selectors_path: Option<PathBuf>,
+
+    /// Run HTTP provider only (skip MCP stdio server).
+    #[arg(long)]
+    pub http_only: bool,
 }
 
 impl Config {

@@ -90,7 +90,7 @@ impl Bridge {
 
         if !current_url.contains("chatgpt.com") && !current_url.contains("chat.openai.com") {
             info!("navigating to ChatGPT (current: {})", current_url);
-            client.navigate("https://chatgpt.com/").await?;
+            client.navigate("https://chatgpt.com/?temporary-chat=true").await?;
             self.inner.initialized.store(false, Ordering::Relaxed);
         }
 
@@ -143,17 +143,25 @@ impl Bridge {
             return Ok(());
         }
         let client = self.cdp().await?;
-        let result = client
-            .evaluate_with_timeout(&js::call_set_temp_chat(true), Duration::from_secs(30))
-            .await?;
 
-        if result.get("error").is_none() {
-            self.inner.temp_chat_on.store(true, Ordering::Relaxed);
-            info!("temporary chat enabled");
-            Ok(())
-        } else {
-            Err(BridgeError::ExtensionError("failed to enable temp chat".to_string()))
+        // Check if temp chat is already active via the label element
+        let is_temp = client
+            .evaluate(&js::call_is_temp_chat())
+            .await
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !is_temp {
+            info!("navigating to temporary chat URL");
+            client.navigate("https://chatgpt.com/?temporary-chat=true").await?;
+            self.inner.initialized.store(false, Ordering::Relaxed);
+            self.ensure_initialized().await?;
         }
+
+        self.inner.temp_chat_on.store(true, Ordering::Relaxed);
+        info!("temporary chat enabled");
+        Ok(())
     }
 
     pub async fn request(

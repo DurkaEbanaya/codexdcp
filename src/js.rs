@@ -152,44 +152,25 @@ pub const INIT_SCRIPT: &str = r#"
   }
 
   async function pageSetTempChat(enabled) {
-    const texts = sels.tempChatText || ['Temporary Chat', 'Временный чат'];
-    function isElementChecked(el) {
-      return el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-state') === 'on' ||
-             el.getAttribute('aria-pressed') === 'true' || el.classList.contains('active');
+    // In the new ChatGPT UI, temp chat is controlled via URL parameter (?temporary-chat=true).
+    // This function checks if temp chat is active and navigates if needed.
+    const label = document.querySelector('[data-testid="temporary-chat-label"]');
+    const isOn = !!label;
+    if (enabled === isOn) return { ok: true, state: enabled ? 'on' : 'off' };
+    // To enable: navigate to the temp chat URL. To disable: navigate to plain URL.
+    if (enabled) {
+      window.location.href = 'https://chatgpt.com/?temporary-chat=true';
+    } else {
+      window.location.href = 'https://chatgpt.com/';
     }
-    function findTempChatElement() {
-      for (const sel of (sels.tempChatButton || [])) { const el = document.querySelector(sel); if (el) return el; }
-      const interactive = document.querySelectorAll('button, [role="menuitem"], [role="menuitemcheckbox"], [role="switch"], [role="option"], a, label');
-      for (const el of interactive) {
-        const text = el.textContent?.trim().toLowerCase() || '';
-        if (text.length < 100 && texts.some(t => text.includes(t.toLowerCase()))) return el;
-      }
-      return null;
-    }
-    let el = findTempChatElement();
-    if (el) {
-      const isChecked = isElementChecked(el);
-      if (enabled !== isChecked) { el.click(); await sleep(500); }
-      return { ok: true, state: enabled ? 'on' : 'off' };
-    }
-    const menuButtons = document.querySelectorAll('button[aria-haspopup], button[aria-expanded]');
-    for (const menuBtn of menuButtons) {
-      try {
-        menuBtn.click(); await sleep(400);
-        el = findTempChatElement();
-        if (el) {
-          const isChecked = isElementChecked(el);
-          if (enabled !== isChecked) { el.click(); await sleep(500); }
-          document.body.click(); await sleep(200);
-          return { ok: true, state: enabled ? 'on' : 'off' };
-        }
-        document.body.click(); await sleep(200);
-      } catch {}
-    }
-    return { error: { message: 'Temporary chat toggle not found in ChatGPT UI.' } };
+    return { ok: true, state: enabled ? 'on' : 'off' };
   }
 
-  window.__codexdcp = { pageSendPrompt, pageReadAndCheck, pageClickModelButton, pageSelectModel, pageSetTempChat };
+  function pageIsTempChat() {
+    return !!document.querySelector('[data-testid="temporary-chat-label"]');
+  }
+
+  window.__codexdcp = { pageSendPrompt, pageReadAndCheck, pageClickModelButton, pageSelectModel, pageSetTempChat, pageIsTempChat };
 })();
 "#;
 
@@ -220,6 +201,10 @@ pub fn call_set_temp_chat(enabled: bool) -> String {
     format!("window.__codexdcp && window.__codexdcp.pageSetTempChat({})", enabled)
 }
 
+pub fn call_is_temp_chat() -> String {
+    "window.__codexdcp ? window.__codexdcp.pageIsTempChat() : (document.querySelector('[data-testid=\"temporary-chat-label\"]') !== null)".to_string()
+}
+
 pub fn call_is_ready() -> &'static str {
     "typeof window.__codexdcp !== 'undefined'"
 }
@@ -232,8 +217,8 @@ pub const DEFAULT_SELECTORS: &str = r#"{
   "conversationTurn": ["[data-testid^=\"conversation-turn-\"]"],
   "markdownContainer": ["div.markdown", "div.prose", "div[class*=\"markdown\"]"],
   "userMarker": ["[class*=\"text-message\"]", "[data-message-author-role=\"user\"]"],
-  "modelSelector": ["button[data-testid*=\"model-selector\"]", "button[aria-haspopup][class*=\"model\"]", "button[aria-expanded][class*=\"model\"]", "button[data-testid=\"model-switcher-button\"]"],
+  "modelSelector": ["button[data-testid*=\"model-selector\"]", ".__composer-pill[aria-haspopup=\"menu\"]", "button[aria-haspopup][class*=\"model\"]", "button[aria-expanded][class*=\"model\"]", "button[data-testid=\"model-switcher-button\"]"],
   "modelDropdownItem": ["[role=\"menuitem\"]", "[role=\"option\"]", "button[role=\"menuitemradio\"]", "a[role=\"menuitem\"]"],
-  "tempChatButton": ["button[data-testid*=\"temp-chat\"]", "button[aria-label*=\"Temporary\"]", "button[aria-label*=\"temp\"]", "[role=\"switch\"][class*=\"temp\"]"],
+  "tempChatButton": ["[data-testid=\"temporary-chat-label\"]"],
   "tempChatText": ["Temporary Chat", "Временный чат", "Чат без истории", "Temp chat", "Чат без сохранения"]
 }"#;

@@ -44,6 +44,13 @@ async fn main() -> Result<()> {
         });
     }
 
+    if config.http_only {
+        info!("HTTP-only mode; skipping MCP stdio server");
+        tokio::signal::ctrl_c().await?;
+        info!("received Ctrl+C, shutting down");
+        return Ok(());
+    }
+
     let server = ChatGptServer::new(
         bridge,
         config.default_timeout,
