@@ -45,6 +45,10 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 # CLI and configuration
 clap = { version = "4.5", features = ["derive", "env"] }
 
+# Filesystem traversal and glob matching
+walkdir = "2.5"
+globset = "0.4"
+
 [dev-dependencies]
 tokio-test = "0.4"
 

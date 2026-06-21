@@ -4,6 +4,7 @@ use codexdcp::{
     config::Config,
     http_server::{self, AppState},
     mcp_server::ChatGptServer,
+    workspace::Workspace,
 };
 use clap::Parser;
 use rmcp::{ServiceExt, transport::stdio};
@@ -44,6 +45,29 @@ async fn main() -> Result<()> {
         });
     }
 
+    let workspace = Workspace::new(config.workspace_root());
+    let bash_mode = config.bash_mode();
+    let writes_enabled = config.writes_enabled();
+    let tool_mode = config.tool_mode();
+
+    info!(
+        "workspace: {} | bash: {:?} | writes: {} | tool-mode: {:?}",
+        workspace.root().display(),
+        bash_mode,
+        writes_enabled,
+        tool_mode,
+    );
+
+    let server = ChatGptServer::new(
+        bridge,
+        config.default_timeout,
+        config.system_prompt,
+        workspace,
+        bash_mode,
+        writes_enabled,
+        tool_mode,
+    );
+
     if config.http_only {
         info!("HTTP-only mode; skipping MCP stdio server");
         tokio::signal::ctrl_c().await?;
@@ -51,11 +75,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let server = ChatGptServer::new(
-        bridge,
-        config.default_timeout,
-        config.system_prompt,
-    );
     let service = server.serve(stdio()).await?;
 
     info!("CodexDCP started; waiting for OpenCode on stdio");

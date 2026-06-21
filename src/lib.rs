@@ -1,8 +1,14 @@
+pub mod bash_ops;
 pub mod bridge;
 pub mod cdp;
 pub mod config;
 pub mod error;
+pub mod fs_ops;
+pub mod git_ops;
+pub mod handoff;
 pub mod http_server;
 pub mod js;
 pub mod mcp_server;
 pub mod prompt;
+pub mod skill;
+pub mod workspace;
