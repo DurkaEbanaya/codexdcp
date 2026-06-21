@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-21
+
+### Added
+- Hybrid mode: CodexDCP is now a full agent platform, not just a ChatGPT bridge
+- Filesystem MCP tools: `read_file`, `write_file`, `edit_file`, `tree`
+- Search MCP tool: `search_files` (uses ripgrep with grep fallback)
+- Bash MCP tool: `bash` with safe allowlist (blocks rm -rf, git push, curl, sudo)
+- Git MCP tools: `git_status`, `git_diff`, `show_changes`
+- Skill discovery MCP tools: `load_skill`, `list_skills` (workspace + user dirs)
+- Handoff MCP tools: `read_handoff`, `handoff_to_agent` (.ai-bridge/ plan system)
+- Context MCP tools: `codex_context` (AGENTS.md chain + git state), `export_pro_context`
+- Tiered tool surface: `--tool-mode minimal|standard|full` controls available tools
+- Workspace safety: path containment check, blocked globs (.git, .env, *.pem, *.key)
+- `--root` flag: workspace root directory (default: current directory)
+- `--bash-mode` flag: `safe|off|full` shell execution policy
+- `--write-mode` flag: `workspace|off` write access control
+- `--http-only` flag: run HTTP provider without MCP stdio server
+- Temp chat via URL parameter (`?temporary-chat=true`) — ChatGPT removed the UI toggle
+- `pageIsTempChat()` JS function: checks `data-testid="temporary-chat-label"`
+- New dependencies: `walkdir`, `globset`
+
+### Changed
+- MCP tool count: 2 → 16
+- `src/mcp_server.rs`: full rewrite with all workspace tools
+- `src/main.rs`: wires workspace, bash mode, write mode, tool mode into server
+- `src/bridge.rs`: `ensure_temp_chat_on()` navigates to `?temporary-chat=true` instead of clicking toggle
+- `src/js.rs`: `pageSetTempChat` simplified to URL-based, added `pageIsTempChat`
+- `src/config.rs`: new fields `root`, `tool_mode`, `bash_mode`, `write_mode`
+
+### Inspired by
+- [rebel0789/codexpro](https://github.com/rebel0789/codexpro) — ported filesystem/git/bash/handoff/skill concepts into Rust
+
 ## [0.4.0] - 2025-06-20
 
 ### Added
