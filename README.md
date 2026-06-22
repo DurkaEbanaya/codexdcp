@@ -1,6 +1,6 @@
 # CodexDCP — Codex Developer Chaos Platform
 
-MCP-коннектор, который превращает браузерный ChatGPT в Codex-подобного агента для OpenCode. Rust MCP-сервер через stdio + Chrome DevTools Protocol (CDP) управляет headless Chrome, который работает с веб-интерфейсом ChatGPT. Включает OpenAI-совместимый HTTP-провайдер.
+MCP-сервер на Rust, который совмещает браузерный ChatGPT и полноценную работу с репозиторием. Управляет headless Chrome через Chrome DevTools Protocol (CDP) для доступа к ChatGPT. Предоставляет 16 MCP-инструментов: ChatGPT bridge, filesystem, git, bash, handoff, skills. Включает OpenAI-совместимый HTTP-провайдер.
 
 ## Архитектура
 
@@ -9,33 +9,44 @@ MCP-коннектор, который превращает браузерный
 │   OpenCode    │  ──────────────────> │      CodexDCP         │  <────────────────>  │  Headless Chrome    │
 │  (MCP client) │                      │  (Rust MCP server)    │   Runtime.evaluate   │  (Brave/Chromium)   │
 └─────────────┘                        └──────────────────────┘                      └─────────────────────┘
-                                               │                                              │
-                                               │ HTTP (OpenAI API)                            │ DOM
-                                               ▼                                              ▼
-                                      ┌──────────────────────┐                   ┌─────────────────────┐
-                                      │  HTTP provider :8766  │                   │   chatgpt.com       │
-                                      └──────────────────────┘                   └─────────────────────┘
+                                                │                                              │
+                          ┌─────────────────────┼─────────────────────┐                      │ DOM
+                          │                     │ HTTP (OpenAI API)    │                      ▼
+                          │                     ▼                      │              ┌─────────────────────┐
+                  ┌──────────────┐     ┌──────────────────────┐        │              │   chatgpt.com       │
+                  │  FS / Git /   │     │  HTTP provider :8766  │────────┘              └─────────────────────┘
+                  │  Bash / Skill │     │  /v1/chat/completions │
+                  └──────────────┘     └──────────────────────┘
 ```
 
-- **Rust MCP server** — реализует протокол MCP через stdio, предоставляет инструменты `chatgpt_coder`, `chatgpt_ask`.
-- **CDP bridge** — внутри сервера, запускает headless Chrome, подключается через DevTools Protocol, выполняет JS через `Runtime.evaluate`.
-- **HTTP provider** — OpenAI-совместимый API на порту 8766 (`/v1/chat/completions`, `/v1/models`, `/health`), поддерживает streaming (SSE).
-- **Headless Chrome** — запускается как child-процесс, использует persistent profile для переиспользования cookies/login сессии.
+- **Rust MCP server** — 16 инструментов через stdio: ChatGPT bridge + filesystem + git + bash + handoff + skills
+- **CDP bridge** — запускает headless Chrome, подключается через DevTools Protocol, выполняет JS через `Runtime.evaluate`
+- **HTTP provider** — OpenAI-совместимый API на порту 8766 (`/v1/chat/completions`, `/v1/models`, `/health`), поддерживает streaming (SSE)
+- **Workspace tools** — прямая работа с файлами, git, shell командами в рабочей директории (без Chrome)
 
 ## Возможности
 
+### ChatGPT bridge
 - **Headless Chrome** — браузер работает в фоне, не отвлекает пользователя
-- **Временный чат** — все запросы идут в temporary chat (история не сохраняется)
+- **Временный чат** — все запросы идут в temporary chat через `?temporary-chat=true` (история не сохраняется)
 - **Cookie reuse** — профиль Brave/Chrome копируется один раз, логин не требуется
 - **Anti-detection** — `--disable-blink-features=AutomationControlled` обходит Cloudflare
-- **MCP-инструменты** — делегируй задачи по коду и вопросы в ChatGPT прямо из OpenCode
-- **HTTP-провайдер** — используй ChatGPT как модель-провайдер (OpenAI-совместимый API)
 - **Выбор модели** — передавай `model: "GPT-4o"`, `"o1"`, и т.д.
 - **Сохранение markdown** — ответы сохраняют code blocks, заголовки, ссылки, таблицы
 - **Стриминг** — частичные ответы через SSE для HTTP-провайдера
 - **Ретраи с backoff** — автоматический повтор при временных ошибках
-- **Кастомный system prompt** — через CLI-флаг или env-переменную
-- **Graceful shutdown** — Ctrl+C корректно останавливает Chrome и сервер
+- **Bridge readiness** — MCP tool calls ждут готовности bridge (до 60 сек) вместо немедленного таймаута
+
+### Workspace tools (гибридный режим)
+- **Filesystem** — `read_file`, `write_file`, `edit_file`, `tree` с path containment проверкой
+- **Search** — `search_files` через ripgrep (с grep fallback)
+- **Bash** — `bash` с safe allowlist (блокирует rm -rf, git push, curl, sudo)
+- **Git** — `git_status`, `git_diff`, `show_changes`
+- **Handoff** — `.ai-bridge/` с планами для Codex/OpenCode/Pi (`read_handoff`, `handoff_to_agent`)
+- **Skills** — discovery и загрузка `SKILL.md` файлов (`load_skill`, `list_skills`)
+- **Context** — `codex_context` (AGENTS.md chain + git state), `export_pro_context`
+- **Tiered tool surface** — `--tool-mode minimal|standard|full` управляет доступными инструментами
+- **Безопасность** — blocked globs (.git, .env, *.pem, *.key), write mode toggle, bash allowlist
 
 ## Требования
 
@@ -92,6 +103,15 @@ cp "$BRAVE/Preferences" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
 
 ```jsonc
 {
+  // ВАЖНО: mcp_timeout должен быть достаточно большим (120000 мс = 2 мин).
+  // ChatGPT tool calls требуют 30-90 секунд: загрузка Chrome (~15 сек) +
+  // навигация на temp chat (~10 сек) + ответ модели (~10-60 сек).
+  // Без этой настройки OpenCode использует дефолтный таймаут (5 сек)
+  // и tool calls падают с "MCP error -32001: Request timed out".
+  // Filesystem/git/bash инструменты отвечают мгновенно — 120 сек это максимум, не минимум.
+  "experimental": {
+    "mcp_timeout": 120000
+  },
   "mcp": {
     "chatgpt-codex": {
       "type": "local",
@@ -149,12 +169,65 @@ cp "$BRAVE/Preferences" ~/.codexdcp/chrome-profile/Default/ 2>/dev/null
 
 ## Инструменты MCP
 
+### ChatGPT bridge (всегда доступны)
+
 | Инструмент | Описание | Параметры |
 |---|---|---|
 | `chatgpt_coder` | Делегировать задачу по коду (Codex-style) | `task`, `context`, `language`, `model`, `format` |
 | `chatgpt_ask` | Задать общий вопрос | `prompt`, `model`, `format` |
 
-Временный чат включается автоматически при каждой отправке запроса — история не сохраняется.
+### Filesystem (minimal+)
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `read_file` | Читать файл с номерами строк | `path`, `offset`, `limit` |
+| `write_file` | Создать/перезаписать файл | `path`, `content` |
+| `edit_file` | Точная замена строки в файле | `path`, `old_string`, `new_string` |
+| `tree` | Дерево директорий | `path`, `max_depth` |
+| `bash` | Shell команда (safe allowlist) | `command` |
+
+### Search (standard+)
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `search_files` | Regex-поиск через ripgrep/grep | `pattern`, `path`, `include` |
+
+### Git (standard+)
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `git_status` | Git status (short format) | — |
+| `git_diff` | Git diff (--stat) | `staged` |
+| `show_changes` | Сводка всех изменений | — |
+
+### Skills (standard+)
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `load_skill` | Загрузить SKILL.md по имени | `name` |
+| `list_skills` | Список всех навыков | — |
+
+### Handoff (standard+)
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `read_handoff` | Читать `.ai-bridge/` директорию | — |
+| `handoff_to_agent` | Записать план для агента | `plan`, `agent`, `model` |
+
+### Context (full only)
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `codex_context` | AGENTS.md chain + git state | — |
+| `export_pro_context` | Экспорт контекста в `.ai-bridge/pro-context.md` | — |
+
+### Режимы инструментов (`--tool-mode`)
+
+| Режим | Инструменты |
+|---|---|
+| `minimal` | ChatGPT + filesystem + bash |
+| `standard` | + search, git, skills, handoff |
+| `full` | + context tools |
 
 ## HTTP API
 
@@ -196,7 +269,7 @@ curl http://127.0.0.1:8766/health
 --http-port        0            порт HTTP (0 = выключен)
 --default-timeout  120          таймаут ответа ChatGPT (сек)
 --system-prompt    -            кастомный системный промпт
---max-retries      2            кол-во ретраев
+--max-retries      3            кол-во ретраев
 --retry-delay-ms   2000         начальная задержка ретрая (мс)
 --chrome-path      -            путь к Chrome/Brave/Chromium
 --chrome-profile   ~/.codexdcp/chrome-profile  путь к user-data-dir
@@ -205,24 +278,33 @@ curl http://127.0.0.1:8766/health
 --visible                       запустить Chrome с видимым окном (для логина)
 --selectors-path   -            путь к кастомным селекторам
 --log-level        info         уровень логирования
+--http-only                     только HTTP-провайдер (без MCP stdio)
+--root             CWD          корень workspace для filesystem/git/bash
+--tool-mode        standard     minimal | standard | full
+--bash-mode        safe         safe | off | full
+--write-mode       workspace    workspace | off
 ```
 
 Все флаги также доступны через env-переменные (`CODEXDCP_*` или `CHATGPT_BRIDGE_*`).
+
+## Безопасность
+
+- **Path containment** — все пути проверяются относительно workspace root; выход за пределы блокируется
+- **Blocked globs** — `.git/`, `.env`, `*.pem`, `*.key` и др. недоступны для чтения/записи
+- **Bash allowlist** — в safe режиме (по умолчанию) выполняются только build/test/lint/git-inspect команды; `rm -rf`, `git push`, `curl`, `sudo` и др. блокируются
+- **Write mode** — `--write-mode off` переводит все инструменты в read-only
+- **DOM селекторы** — ChatGPT DOM может меняться, селекторы обновляются в `src/js.rs` (`DEFAULT_SELECTORS`), переопределяются через `--selectors-path`
+- **Профиль Chrome** — содержит cookies с доступом к ChatGPT. Не коммитьте `~/.codexdcp/chrome-profile/`
+- **Terms of Service** — автоматизация веб-интерфейса ChatGPT может нарушать ToS OpenAI. Используйте на свой страх и риск
 
 ## Отладка
 
 - Бинарник с debug-логами: `codexdcp --log-level debug`
 - Видимый Chrome для дебага: `codexdcp --visible --log-level debug`
+- Только HTTP (без MCP): `codexdcp --http-only --http-port 8766 --log-level debug`
 - Проверка CDP: `curl http://127.0.0.1:9222/json/version`
 - Проверка HTTP: `curl http://127.0.0.1:8766/health`
 - Логи Chrome наследуются в stderr codexdcp
-
-## Безопасность и ограничения
-
-- DOM ChatGPT может меняться — селекторы обновляются в `src/js.rs` (`DEFAULT_SELECTORS`).
-- Профиль Chrome содержит cookies с доступом к ChatGPT. Не коммитьте `~/.codexdcp/chrome-profile/`.
-- Автоматизация веб-интерфейса ChatGPT может нарушать Terms of Service OpenAI. Используйте на свой страх и риск.
-- Headless Chrome запускается как child-процесс и завершается при остановке сервера.
 
 ## Разработка
 
