@@ -26,7 +26,7 @@ pub struct Config {
     pub system_prompt: Option<String>,
 
     /// Maximum retry attempts for transient errors.
-    #[arg(long, env = "CHATGPT_BRIDGE_MAX_RETRIES", default_value_t = 2)]
+    #[arg(long, env = "CHATGPT_BRIDGE_MAX_RETRIES", default_value_t = 3)]
     pub max_retries: u32,
 
     /// Initial retry delay in milliseconds (doubles on each retry).

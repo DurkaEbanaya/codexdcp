@@ -4,7 +4,7 @@ use crate::js;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex, Notify};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -21,6 +21,8 @@ struct Inner {
     temp_chat_on: AtomicBool,
     max_retries: u32,
     retry_delay_ms: u64,
+    ready: Notify,
+    ready_flag: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -39,6 +41,8 @@ impl Bridge {
                 temp_chat_on: AtomicBool::new(false),
                 max_retries,
                 retry_delay_ms,
+                ready: Notify::new(),
+                ready_flag: AtomicBool::new(false),
             }),
         }
     }
@@ -63,8 +67,26 @@ impl Bridge {
 
         self.ensure_chatgpt_ready().await?;
 
+        self.inner.ready_flag.store(true, Ordering::Relaxed);
+        self.inner.ready.notify_waiters();
         info!("bridge ready — ChatGPT tab initialized");
         Ok(())
+    }
+
+    /// Wait for the bridge to become ready (up to 60 seconds).
+    /// Returns immediately if already ready.
+    pub async fn wait_ready(&self) -> Result<(), BridgeError> {
+        if self.inner.ready_flag.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let timeout = Duration::from_secs(60);
+        match tokio::time::timeout(timeout, self.inner.ready.notified()).await {
+            Ok(()) => {
+                info!("bridge ready signal received");
+                Ok(())
+            }
+            Err(_) => Err(BridgeError::NotConnected),
+        }
     }
 
     async fn cdp(&self) -> Result<CdpClient, BridgeError> {
@@ -171,6 +193,8 @@ impl Bridge {
         model: Option<String>,
         format: Option<String>,
     ) -> Result<String, BridgeError> {
+        self.wait_ready().await?;
+
         let max_retries = self.inner.max_retries;
         let retry_delay_ms = self.inner.retry_delay_ms;
 
@@ -270,6 +294,7 @@ impl Bridge {
         model: Option<String>,
         format: Option<String>,
     ) -> Result<StreamHandle, BridgeError> {
+        self.wait_ready().await?;
         self.ensure_chatgpt_ready().await?;
         self.ensure_temp_chat_on().await?;
         let client = self.cdp().await?;
