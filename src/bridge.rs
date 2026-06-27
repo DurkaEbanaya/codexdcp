@@ -73,6 +73,16 @@ impl Bridge {
         Ok(())
     }
 
+    /// Kill Chrome process if we own it. Called during graceful shutdown
+    /// to prevent orphaned Chrome processes when OpenCode respawns the MCP server.
+    pub async fn shutdown(&self) {
+        let mut chrome = self.inner._chrome.lock().await;
+        if let Some(mut proc) = chrome.take() {
+            info!("killing Chrome process on shutdown");
+            proc.kill().await;
+        }
+    }
+
     /// Wait for the bridge to become ready (up to 60 seconds).
     /// Returns immediately if already ready.
     pub async fn wait_ready(&self) -> Result<(), BridgeError> {

@@ -69,6 +69,12 @@ impl ChromeProcess {
             "--window-size=1280,720".to_string(),
             "--disable-blink-features=AutomationControlled".to_string(),
             "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36".to_string(),
+            // --no-zygote: Chrome's zygote process forks children that inherit
+            // injected dylibs (e.g. libcornerfix.dylib). macOS kills those children
+            // with EXC_BAD_ACCESS (Code Signature Invalid). --no-zygote makes
+            // Chrome spawn helpers via fork+exec instead, which resets the image
+            // and doesn't inherit injected dylibs.
+            "--no-zygote".to_string(),
         ];
 
         if config.headless && !config.visible {
@@ -434,8 +440,15 @@ async fn is_chrome_running(port: u16) -> bool {
 
 pub async fn ensure_chrome(config: &ChromeConfig) -> Result<Option<ChromeProcess>, BridgeError> {
     if is_chrome_running(config.cdp_port).await {
-        info!("Chrome already running on port {}, connecting", config.cdp_port);
-        return Ok(None);
+        info!("Chrome already running on port {}, killing and relaunching to take ownership", config.cdp_port);
+        kill_chrome_on_port(config.cdp_port).await;
+        sleep(Duration::from_millis(1000)).await;
+        // Verify it's actually dead
+        if is_chrome_running(config.cdp_port).await {
+            warn!("stale Chrome didn't die on port {}, trying harder", config.cdp_port);
+            kill_chrome_on_port(config.cdp_port).await;
+            sleep(Duration::from_millis(1000)).await;
+        }
     }
     let proc = ChromeProcess::launch(config).await?;
     Ok(Some(proc))
@@ -481,4 +494,101 @@ fn find_chrome(override_path: Option<&str>) -> Result<String, BridgeError> {
     Err(BridgeError::ChromeError(
         "Chrome/Chromium/Brave not found. Use --chrome-path to specify the binary.".to_string(),
     ))
+}
+
+/// Unblock SIGTERM in the current process.
+///
+/// OpenCode spawns MCP servers with SIGTERM blocked in the signal mask
+/// (inherited via fork/exec). tokio's `signal(SignalKind::terminate())`
+/// registers a handler but does NOT unblock the signal — so SIGTERM is
+/// never delivered. We must explicitly unblock it via sigprocmask.
+pub fn unblock_sigterm() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// Kill stale codexdcp instances and orphaned Chrome from previous runs.
+///
+/// OpenCode respawns MCP servers without killing old ones, causing process leaks.
+/// This function ensures a clean slate before launching a new Chrome instance:
+/// 1. SIGTERM previous codexdcp instances (may not work — OpenCode blocks SIGTERM).
+/// 2. SIGKILL any that survived SIGTERM (SIGKILL always works).
+/// 3. Kill orphaned Chrome on our port (in case old codexdcp was killed).
+pub async fn cleanup_stale_processes(config: &ChromeConfig) {
+    let our_pid = std::process::id();
+
+    // 1. SIGTERM previous codexdcp instances.
+    if let Ok(output) = tokio::process::Command::new("pgrep")
+        .args(["-f", &format!("codexdcp.*cdp.port.*{}", config.cdp_port)])
+        .output()
+        .await
+    {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid_str in pids.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(pid) = pid_str.parse::<u32>()
+                && pid != our_pid
+            {
+                info!("SIGTERM stale codexdcp PID {}", pid);
+                let _ = tokio::process::Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .output()
+                    .await;
+            }
+        }
+    }
+
+    // Wait for SIGTERM to take effect (if not blocked by OpenCode)
+    sleep(Duration::from_millis(500)).await;
+
+    // 2. SIGKILL any codexdcp that survived SIGTERM (OpenCode blocks SIGTERM)
+    if let Ok(output) = tokio::process::Command::new("pgrep")
+        .args(["-f", &format!("codexdcp.*cdp.port.*{}", config.cdp_port)])
+        .output()
+        .await
+    {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid_str in pids.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(pid) = pid_str.parse::<u32>()
+                && pid != our_pid
+            {
+                info!("SIGKILL stale codexdcp PID {}", pid);
+                let _ = tokio::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .output()
+                    .await;
+            }
+        }
+    }
+
+    // Wait for OS to reap killed processes
+    sleep(Duration::from_millis(300)).await;
+
+    // 3. Kill orphaned Chrome on our CDP port
+    if is_chrome_running(config.cdp_port).await {
+        info!("killing stale Chrome on port {}", config.cdp_port);
+        kill_chrome_on_port(config.cdp_port).await;
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Find and kill the Chrome/Brave process listening on a given TCP port.
+async fn kill_chrome_on_port(port: u16) {
+    if let Ok(output) = tokio::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", port), "-sTCP:LISTEN"])
+        .output()
+        .await
+    {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid_str in pids.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            info!("killing Chrome PID {} on port {}", pid_str, port);
+            let _ = tokio::process::Command::new("kill")
+                .args(["-TERM", pid_str])
+                .output()
+                .await;
+        }
+    }
 }
